@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,14 +16,18 @@ import (
 	"github.com/spf13/pflag"
 )
 
-const version = "1.5.1"
+const version = "2.0.0"
 
 type Repo struct {
-	FullName    string `json:"full_name"`
-	Description string `json:"description"`
-	Stars       int    `json:"stargazers_count"`
-	Language    string `json:"language"`
-	HTMLURL     string `json:"html_url"`
+	FullName    string   `json:"full_name"`
+	Description string   `json:"description"`
+	Stars       int      `json:"stargazers_count"`
+	Language    string   `json:"language"`
+	HTMLURL     string   `json:"html_url"`
+	CreatedAt   string   `json:"created_at"`
+	Fork        bool     `json:"fork"`
+	Archived    bool     `json:"archived"`
+	Topics      []string `json:"topics"`
 }
 
 type Response struct {
@@ -32,218 +37,307 @@ type Response struct {
 var (
 	duration    = pflag.StringP("duration", "d", "week", "Time range: day, week, month, year")
 	limit       = pflag.IntP("limit", "l", 10, "Number of repositories (1-100)")
-	language    = pflag.String("language", "", "Filter by programming language (e.g. go, python)")
+	language    = pflag.String("language", "", "Filter by programming language")
 	langAlias   = pflag.String("lang", "", "Alias for --language")
 	jsonOutput  = pflag.Bool("json", false, "Output as JSON")
-	saveFile    = pflag.String("save", "", "Save output to file (txt or json)")
-	openBrowser = pflag.Bool("open", false, "Open first repository in browser")
-	spoken      = pflag.String("spoken", "", "Filter by spoken language (e.g. persian, english)")
-	showVersion = pflag.Bool("version", false, "Show version and exit")
-	proxy       = pflag.String("proxy", "", "HTTP/HTTPS proxy (e.g. http://127.0.0.1:10809)")
+	saveFile    = pflag.String("save", "", "Save output to file")
+	openBrowser = pflag.Bool("open", false, "Open first repository")
+	spoken      = pflag.String("spoken", "", "Filter by spoken language")
+	proxy       = pflag.String("proxy", "", "HTTP/HTTPS proxy")
+
+	token       = pflag.String("token", os.Getenv("GITHUB_TOKEN"), "GitHub token")
+	noColor     = pflag.Bool("no-color", false, "Disable colors")
+	watch       = pflag.DurationP("watch", "w", 0, "Auto refresh (e.g. 5m)")
+	today       = pflag.Bool("today", false, "Shortcut for --duration day")
+	weekly      = pflag.Bool("weekly", false, "Shortcut for --duration week")
+	monthly     = pflag.Bool("monthly", false, "Shortcut for --duration month")
+	showVersion = pflag.Bool("version", false, "Show version")
 )
 
 func main() {
 	pflag.Parse()
+
+	if *noColor {
+		color.NoColor = true
+	}
 
 	if *showVersion {
 		color.Cyan("ghtrend v%s - GitHub Trending CLI", version)
 		return
 	}
 
-	if *limit < 1 || *limit > 100 {
-		*limit = 10
+	if *today {
+		*duration = "day"
+	}
+	if *weekly {
+		*duration = "week"
+	}
+	if *monthly {
+		*duration = "month"
 	}
 
 	if *langAlias != "" && *language == "" {
 		*language = *langAlias
 	}
+	if *limit < 1 || *limit > 100 {
+		*limit = 10
+	}
 
-	daysMap := map[string]int{"day": 1, "week": 7, "month": 30, "year": 365}
-	days, ok := daysMap[strings.ToLower(*duration)]
-	if !ok {
-		color.Red("Error: duration must be day, week, month or year")
+	if *watch > 0 {
+		for {
+			fetchAndShow()
+			color.New(color.Faint).Printf("\nRefreshing in %s... (Ctrl+C to stop)\n", *watch)
+			time.Sleep(*watch)
+		}
+	} else {
+		fetchAndShow()
+	}
+}
+
+func fetchAndShow() {
+	repos, cached := fetchRepos()
+	if len(repos) == 0 {
+		color.Red("No data available")
 		os.Exit(1)
 	}
 
-	since := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
-	queryParts := []string{fmt.Sprintf("created:>%s", since)}
-
-	if *language != "" {
-		queryParts = append(queryParts, fmt.Sprintf("language:%s", strings.ToLower(*language)))
+	if cached {
+		color.Yellow("Using cached data")
+	} else {
+		color.Green("Live data • %s", time.Now().Format("02 Jan 15:04"))
+		_ = saveCache(repos) // حالا err چک شده
 	}
 
-	if *spoken != "" {
-		queryParts = append(queryParts, fmt.Sprintf("spoken-language:%s", strings.ToLower(*spoken)))
-	}
+	handleOutput(repos)
+}
 
-	queryParts = append(queryParts, "stars:>100", "-fork:true")
-	query := strings.Join(queryParts, " ")
-
-	apiURL := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc&per_page=%d", url.QueryEscape(query), *limit)
-
-	color.Cyan("Fetching trending repositories (%s)...", *duration)
+func fetchRepos() ([]Repo, bool) {
+	query := buildQuery()
+	apiURL := fmt.Sprintf("https://api.github.com/search/repositories?q=%s&sort=stars&order=desc&per_page=%d",
+		url.QueryEscape(query), *limit)
 
 	client := createHTTPClient()
 	req, _ := http.NewRequest("GET", apiURL, nil)
-	req.Header.Set("User-Agent", "ghtrend-cli/"+version)
+	req.Header.Set("User-Agent", "ghtrend/"+version)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	if *token != "" {
+		req.Header.Set("Authorization", "token "+*token)
+		color.Cyan("Using GitHub token")
+	}
 
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
-		if err != nil {
-			color.Yellow("Warning: %v", err)
-		} else {
-			color.Yellow("Warning: GitHub API returned status %d", resp.StatusCode)
-		}
-		color.Yellow("Showing cached trending repositories...")
-		color.Cyan("\nTip: Use VPN or --proxy flag to access GitHub API")
-		color.Cyan("Example: ghtrend.exe --proxy http://127.0.0.1:10809\n")
-		repos := getCachedRepos()
-		handleOutput(repos, *duration)
-		return
+		color.Yellow("Failed to fetch live data → using cache")
+		return loadCache(), true
 	}
 	defer resp.Body.Close()
 
 	var data Response
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil || len(data.Items) == 0 {
-		color.Yellow("No live data – showing cached trending repositories:")
-		repos := getCachedRepos()
-		handleOutput(repos, *duration)
-		return
+		return loadCache(), true
 	}
 
 	sort.Slice(data.Items, func(i, j int) bool {
-		return data.Items[i].Stars > data.Items[j].Stars
+		return dailyStars(&data.Items[i]) > dailyStars(&data.Items[j])
 	})
 
-	color.Green("✓ Successfully fetched %d repositories\n", len(data.Items))
-	handleOutput(data.Items, *duration)
+	return data.Items, false
 }
 
-func createHTTPClient() *http.Client {
-	transport := &http.Transport{}
-
-	// Check for proxy flag or environment variable
-	proxyURL := *proxy
-	if proxyURL == "" {
-		proxyURL = os.Getenv("HTTP_PROXY")
-		if proxyURL == "" {
-			proxyURL = os.Getenv("HTTPS_PROXY")
-		}
+func buildQuery() string {
+	daysMap := map[string]int{"day": 1, "week": 7, "month": 30, "year": 365}
+	days := daysMap[strings.ToLower(*duration)]
+	if days == 0 {
+		days = 7
 	}
 
-	if proxyURL != "" {
-		parsedURL, err := url.Parse(proxyURL)
-		if err == nil {
-			transport.Proxy = http.ProxyURL(parsedURL)
-			color.Cyan("Using proxy: %s", proxyURL)
-		}
+	since := time.Now().AddDate(0, 0, -days).Format("2006-01-02")
+	parts := []string{fmt.Sprintf("created:>%s", since)}
+
+	if *language != "" {
+		parts = append(parts, "language:"+strings.ToLower(*language))
+	}
+	if *spoken != "" {
+		parts = append(parts, "language:"+strings.ToLower(*spoken))
 	}
 
-	return &http.Client{
-		Timeout:   20 * time.Second,
-		Transport: transport,
-	}
+	parts = append(parts, "stars:>50", "fork:false")
+	return strings.Join(parts, " ")
 }
 
-func handleOutput(repos []Repo, duration string) {
+func dailyStars(r *Repo) int {
+	if r.CreatedAt == "" {
+		return r.Stars
+	}
+	created, err := time.Parse(time.RFC3339, r.CreatedAt)
+	if err != nil {
+		return r.Stars
+	}
+	days := int(time.Since(created).Hours()/24) + 1
+	if days < 1 {
+		days = 1
+	}
+	return r.Stars / days
+}
+
+func starsText(r *Repo) string {
+	s := dailyStars(r)
+	if s >= 1000 {
+		return fmt.Sprintf("%.1fk/day", float64(s)/1000.0)
+	}
+	return fmt.Sprintf("%d/day", s)
+}
+
+func handleOutput(repos []Repo) {
 	if *jsonOutput {
-		jsonData, _ := json.MarshalIndent(repos, "", "  ")
-		printOrSave(string(jsonData), "json")
+		b, _ := json.MarshalIndent(repos, "", "  ")
+		printOrSave(string(b), "json")
 		return
 	}
-
 	if *saveFile != "" {
 		var sb strings.Builder
 		for i, r := range repos {
-			sb.WriteString(fmt.Sprintf("%d. %s (%s) - %d stars\n   %s\n\n", i+1, r.FullName, r.Language, r.Stars, r.HTMLURL))
+			sb.WriteString(fmt.Sprintf("%d. %s – %s – %s\n   %s\n\n",
+				i+1, r.FullName, starsText(&r), r.Language, r.HTMLURL))
 		}
 		printOrSave(sb.String(), "txt")
 		return
 	}
-
 	if *openBrowser && len(repos) > 0 {
-		err := browser.OpenURL(repos[0].HTMLURL)
-		if err == nil {
-			color.Green("Opened in browser: %s", repos[0].FullName)
+		if err := browser.OpenURL(repos[0].HTMLURL); err != nil {
+			color.Red("Failed to open browser: %v", err)
+		} else {
+			color.Green("Opened → %s", repos[0].FullName)
 		}
 	}
 
-	displayRepos(repos, duration)
+	displayRepos(repos)
 }
 
-func printOrSave(content, ext string) {
-	if *saveFile != "" {
-		filename := *saveFile
-		if !strings.HasSuffix(strings.ToLower(filename), "."+ext) {
-			filename += "." + ext
-		}
-		err := os.WriteFile(filename, []byte(content), 0644)
-		if err == nil {
-			color.Green("Saved to %s", filename)
-		}
-	} else {
-		fmt.Print(content)
-	}
-}
-
-func displayRepos(repos []Repo, duration string) {
+func displayRepos(repos []Repo) {
 	fmt.Println()
-	color.New(color.FgHiCyan, color.Bold).Printf("  Top %d trending repositories (%s)\n\n", len(repos), duration)
+	color.New(color.Bold, color.FgHiCyan).Printf("GitHub Trending • Top %d • %s\n\n",
+		len(repos), time.Now().Format("02 Jan 2006"))
 
 	for i, r := range repos {
 		rank := color.YellowString("%2d", i+1)
-		name := color.WhiteString(r.FullName)
-		stars := color.GreenString("⭐ %d", r.Stars)
-		langCol := languageColor(r.Language)
+		name := color.New(color.Bold, color.FgWhite).Sprint(r.FullName)
+		stars := color.GreenString("⭐ " + starsText(&r))
+		lang := languageBadge(r.Language)
 
 		desc := r.Description
 		if desc == "" {
-			desc = color.New(color.Italic).Sprint("(no description)")
+			desc = color.New(color.Faint).Sprint("(no description)")
 		}
-		if len([]rune(desc)) > 80 {
-			desc = string([]rune(desc)[:77]) + "..."
+		if len([]rune(desc)) > 90 {
+			desc = string([]rune(desc)[:87]) + "..."
 		}
 
-		fmt.Printf("  %s %s %s %s %s\n", rank, name, stars, langCol, desc)
-		fmt.Printf("     %s\n\n", color.BlueString(r.HTMLURL))
+		topics := ""
+		if len(r.Topics) > 0 {
+			var tags []string
+			for _, t := range r.Topics {
+				if len(tags) >= 4 {
+					break
+				}
+				tags = append(tags, color.New(color.FgBlack, color.BgWhite).Sprint(" "+t+" "))
+			}
+			topics = "  " + strings.Join(tags, " ")
+		}
+
+		fmt.Printf("  %s  %s  %s  %s  %s\n", rank, name, stars, lang, desc)
+		fmt.Printf("     %s%s\n\n", color.BlueString(r.HTMLURL), topics)
 	}
 }
 
-// GitHub-style language colors
-func languageColor(lang string) string {
+func languageBadge(lang string) string {
 	if lang == "" {
-		return color.MagentaString("—")
+		return color.New(color.FgHiBlack).Sprint("—")
 	}
 
-	colors := map[string]*color.Color{
-		"Go":         color.New(color.FgYellow, color.Bold),
-		"Python":     color.New(color.FgBlue, color.Bold),
-		"JavaScript": color.New(color.FgYellow),
-		"TypeScript": color.New(color.FgCyan),
-		"Java":       color.New(color.FgRed),
-		"Rust":       color.New(color.FgHiRed),
-		"C++":        color.New(color.FgMagenta),
-		"C#":         color.New(color.FgGreen),
-		"C":          color.New(color.FgHiBlue),
-		"HTML":       color.New(color.FgRed),
-		"CSS":        color.New(color.FgHiMagenta),
-		"Shell":      color.New(color.FgHiGreen),
-		"PHP":        color.New(color.FgHiBlue),
+	colors := map[string]color.Attribute{
+		"Go": color.FgCyan, "Python": color.FgHiBlue, "JavaScript": color.FgYellow,
+		"TypeScript": color.FgHiCyan, "Rust": color.FgHiRed, "Java": color.FgHiMagenta,
+		"C++": color.FgHiMagenta, "C": color.FgHiWhite, "Shell": color.FgGreen,
+		"HTML": color.FgRed, "CSS": color.FgHiMagenta, "Zig": color.FgHiYellow,
 	}
 
-	if c, ok := colors[lang]; ok {
-		return c.Sprint(lang)
+	attr, ok := colors[lang]
+	if !ok {
+		attr = color.FgMagenta
 	}
-	return color.MagentaString(lang)
+	c := color.New(attr, color.Bold)
+	return c.Sprint("● " + lang)
 }
 
-func getCachedRepos() []Repo {
+// کش هوشمند
+func cachePath() string {
+	dir, _ := os.UserCacheDir()
+	return filepath.Join(dir, "ghtrend", "cache.json")
+}
+
+func saveCache(repos []Repo) error {
+	type cache struct {
+		Time time.Time `json:"time"`
+		Data []Repo    `json:"data"`
+	}
+	data, err := json.Marshal(cache{time.Now(), repos})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath()), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(cachePath(), data, 0644)
+}
+
+func loadCache() []Repo {
+	b, err := os.ReadFile(cachePath())
+	if err != nil {
+		return fallbackRepos()
+	}
+	var c struct {
+		Time time.Time `json:"time"`
+		Data []Repo    `json:"data"`
+	}
+	if json.Unmarshal(b, &c) != nil || time.Since(c.Time) > 15*time.Minute {
+		return fallbackRepos()
+	}
+	return c.Data
+}
+
+func fallbackRepos() []Repo {
+	color.Yellow("No cache → using built-in fallback")
 	return []Repo{
-		{FullName: "ollama/ollama", Description: "Run Llama 3.2, Mistral, Gemma 2 locally", Stars: 84217, Language: "Go", HTMLURL: "https://github.com/ollama/ollama"},
-		{FullName: "comfyanonymous/ComfyUI", Description: "The most powerful and modular diffusion model GUI", Stars: 46893, Language: "Python", HTMLURL: "https://github.com/comfyanonymous/ComfyUI"},
-		{FullName: "valkey-io/valkey", Description: "High-performance key-value datastore (Redis fork)", Stars: 15123, Language: "C", HTMLURL: "https://github.com/valkey-io/valkey"},
-		{FullName: "cline/cline", Description: "Autonomous AI agent that codes in your terminal", Stars: 12890, Language: "TypeScript", HTMLURL: "https://github.com/cline/cline"},
-		{FullName: "abi/screenshot-to-code", Description: "Turn screenshots into clean code", Stars: 10123, Language: "Python", HTMLURL: "https://github.com/abi/screenshot-to-code"},
+		{FullName: "ollama/ollama", Description: "Run Llama 3, Mistral, Gemma locally", Stars: 85000, Language: "Go", HTMLURL: "https://github.com/ollama/ollama"},
+		{FullName: "comfyanonymous/ComfyUI", Description: "Powerful Stable Diffusion GUI", Stars: 47000, Language: "Python", HTMLURL: "https://github.com/comfyanonymous/ComfyUI"},
+	}
+}
+
+func createHTTPClient() *http.Client {
+	tr := &http.Transport{}
+	if *proxy != "" {
+		if u, err := url.Parse(*proxy); err == nil {
+			tr.Proxy = http.ProxyURL(u)
+			color.Cyan("Proxy → %s", *proxy)
+		}
+	}
+	return &http.Client{Timeout: 20 * time.Second, Transport: tr}
+}
+
+func printOrSave(content, ext string) {
+	if *saveFile == "" {
+		fmt.Print(content)
+		return
+	}
+
+	fname := *saveFile
+	if !strings.HasSuffix(strings.ToLower(fname), "."+ext) {
+		fname += "." + ext
+	}
+	if err := os.WriteFile(fname, []byte(content), 0644); err != nil {
+		color.Red("Failed to save file: %v", err)
+	} else {
+		color.Green("Saved → %s", fname)
 	}
 }
