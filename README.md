@@ -2,12 +2,6 @@
 
 # 🚀 ghtrend: GitHub Trending CLI
 
-[![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/vasei-me/GitHub_Trending_CLI?label=Go&logo=go&style=flat-square)](https://golang.org)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/vasei-me/GitHub_Trending_CLI?style=flat-square&logo=github)](https://github.com/vasei-me/GitHub_Trending_CLI/releases/latest)
-[![GitHub all releases](https://img.shields.io/github/downloads/vasei-me/GitHub_Trending_CLI/total?style=flat-square&color=blue)](https://github.com/vasei-me/GitHub_Trending_CLI/releases)
-[![GitHub stars](https://img.shields.io/github/stars/vasei-me/GitHub_Trending_CLI?style=flat-square&logo=github)](https://github.com/vasei-me/GitHub_Trending_CLI/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/vasei-me/GitHub_Trending_CLI?style=flat-square&logo=github)](https://github.com/vasei-me/GitHub_Trending_CLI/network)
-[![GitHub license](https://img.shields.io/github/license/vasei-me/GitHub_Trending_CLI?style=flat-square)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](https://makeapullrequest.com)
 
 **A blazing-fast, beautiful, and feature-rich command-line interface to discover trending repositories on GitHub right from your terminal!** ⚡
@@ -72,11 +66,25 @@ ghtrend --duration day --limit 5
 📖 Usage Examples
 Basic Commands
 | Command | Description |
-| -------------------------- | ------------------------------------- |
-| `ghtrend` | Get top 10 trending repos (past week) |
-| `ghtrend --limit 20` | Get top 20 repositories |
-| `ghtrend --duration month` | Trending repos from past month |
-| `ghtrend --version` | Show version information |
+|----------------------------------------------|--------------------------------------------------------------|
+| `ghtrend` | Top 10 trending repos this week (default) |
+| `ghtrend --today` | Today’s trending repositories |
+| `ghtrend --weekly` | This week’s trending (default) |
+| `ghtrend --monthly` | This month’s trending |
+| `ghtrend --duration day|week|month|year` | Custom time range |
+| `ghtrend -l 25` or `ghtrend --limit 25` | Show up to 100 repositories |
+| `ghtrend --language go` | Filter by language (go, python, rust, etc.) |
+| `ghtrend --lang js` | Short alias for --language |
+| `ghtrend --spoken english` | Filter by spoken language |
+| `ghtrend --open` | Open the #1 repo in your browser |
+| `ghtrend --json` | Output as JSON |
+| `ghtrend --save file.txt` | Save results to a text file |
+| `ghtrend --save file.json --json` | Save results as JSON file |
+| `ghtrend --token ghp_xxx` | Use GitHub token (higher rate limits) |
+| `ghtrend -w 5m` or `ghtrend --watch 5m` | Auto-refresh every 5 minutes (or any interval) |
+| `ghtrend --proxy http://127.0.0.1:10809` | Use HTTP/HTTPS or SOCKS proxy |
+| `ghtrend --no-color` | Disable colored output (good for scripts/pipes) |
+| `ghtrend --version` | Show version (v2.0.0) |
 
 Filtering Examples
 
