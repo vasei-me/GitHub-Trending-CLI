@@ -12,8 +12,6 @@
 
 **A blazing-fast, beautiful, and feature-rich command-line interface to discover trending repositories on GitHub right from your terminal!** ⚡
 
-![ghtrend demo](https://via.placeholder.com/800x400/2D3748/FFFFFF?text=ghtrend+in+action+-+Colorful+terminal+output+with+GitHub+trending+repos)
-
 </div>
 
 ## ✨ Features
