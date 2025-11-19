@@ -129,3 +129,6 @@ ghtrend --save my_trends.json --json
 # Disable colors for clean output (useful for scripts)
 ghtrend --no-color
 ```
+
+Solution for the GitHub Trending CLI project on roadmap.sh  
+Project URL: https://roadmap.sh/projects/github-trending-cli
